@@ -1,7 +1,7 @@
 # 3D-Printer Motion Programming System (Prusa I3 MK3S)
 
 **Purpose:** repurpose a Prusa I3 MK3S as a deterministic 3-axis motion platform for research (raster scans, sensor sweeps, motion-control experiments).  
-**Author / Lab:** [Your Lab Name] — Research code for motion experiments and metrology.
+**Alex Zheng / PhD Silas Ifyeani:** [PI Kevin Musselman] — Research code for motion experiments and metrology.
 
 ---
 
