@@ -1,15 +1,20 @@
 import sys
+import time
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QRadioButton, QButtonGroup, QGridLayout, QScrollArea
 )
 from PySide6.QtGui import QPixmap, QDoubleValidator, QFont
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QObject, QThread
 from pathlib import Path
 
 # The backend
 from gcode_placeholders import GCodePlaceholders
-import RunTimer
+import serial
+# from RunTimer import Timer
+
+
+#TODO implement graceful thread ends.
 
 # ---------------- Mode Selection ----------------
 class ModeSelector(QWidget):
@@ -94,7 +99,7 @@ class ParameterInput(QWidget):
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer_layout.addWidget(title)
 
-        subtitle = QLabel("Provide the necessary parameters below (units) [Max > 0: X = 245, Y = 245, Z = 10 < z < 100]:")
+        subtitle = QLabel("Provide parameters below [ X < 245, Y < 245, Z < 200, ΔD/k = 0 (mod k)]:")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer_layout.addWidget(subtitle)
 
@@ -123,20 +128,59 @@ class ParameterInput(QWidget):
             values[k] = int(values[k])
         self.parameters_confirmed.emit(values)
 
-class TimerDisplay(QWidget):
+class TimerWorker(QWidget):
+
+    time_changed = Signal(int)
+
+    def __init__(self):
+        tick = Signal(float)       # emits the elapsed time
+        finished = Signal()
+
     def __init__(self):
         super().__init__()
+        self._running = False
 
-        layout = QVBoxLayout()
-        layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+    def start_timer(self):
+        self._running = True
+        start = time.time()
 
-        value_label = QLabel(str(RunTimer.currentTime))
-        value_label.setFont(QFont("Arial", 14, QFont.Weight.Bold))
-        value_label.setAlignment(Qt.AlignmentFlag.AlignRight)
+        while self._running:
+            elapsed = time.time() - start
+            self.tick.emit(elapsed)
+            time.sleep(0.1)   # 10 Hz update; adjust as needed
 
-        layout.addWidget(value_label)
+        self.finished.emit()
 
-        self.setLayout(layout)
+    def stop_timer(self):
+        self._running = False
+
+class SerialWorker(QObject):
+
+    start_signal = Signal()
+    stop_signal = Signal()
+    finished = Signal()
+
+    def __init__(self, port):
+        super().__init__()
+        self._running = True
+        self.port = serial.Serial(port, 115200, timeout=0.1)
+
+    def run(self):
+        while self._running:
+            line = self.port.readline().decode().strip()
+
+            if line == "START":
+                self.start_signal.emit()
+
+            elif line == "STOP":
+                self.stop_signal.emit()
+
+            # time.sleep(0.01)
+
+        self.finished.emit()
+
+    def stop(self):
+        self._running = False
 
 
 # ---------------- Main Window ----------------
@@ -177,22 +221,24 @@ class MainWindow(QMainWindow):
         self.mode_selector = ModeSelector(modes)
         self.mode_selector.mode_selected.connect(self.on_mode_selected)
 
-        self.param_input = ParameterInput(["X_initial", "Y_initial", "Z_initial", "ΔX", "ΔY", "ΔZ", "XBound", "YBound", "ZBound","Speed"])
+        self.param_input = ParameterInput(["X_initial", "Y_initial", "Z_initial", "ΔX", "ΔY", "ΔZ", "XBound", "YBound", "ZBound","Speed", "Acceleration", "Jerk", "n_x", "n_y"])
         self.param_input.parameters_confirmed.connect(self.on_params_confirmed)
 
-        self.timer_display = TimerDisplay()
+        # self.timer_display = TimerDisplay()
+        # self.timer_display.time_changed.connect(self.on_mode_selected)
 
         content_layout.addWidget(self.mode_selector)
         content_layout.addSpacing(40)
         content_layout.addWidget(self.param_input)
         main_layout.addLayout(content_layout)
-        main_layout.addWidget(self.timer_display)
+        # main_layout.addWidget(self.timer_display)
 
         # Gcode button
         self.generate_btn = QPushButton("Generate G-code")
         self.generate_btn.setEnabled(False)
         self.generate_btn.clicked.connect(self.on_generate_gcode)
 
+        self.setup_serial()
 
         # Align bottom-right
         btn_layout = QHBoxLayout()
@@ -217,6 +263,72 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.resize(1000, 800)
         self.setMinimumSize(800, 600)
+
+        self.label = QLabel("0.0")
+        # self.start_btn = QPushButton("Start")
+        # self.stop_btn = QPushButton("Stop")
+
+        Timerlayout = QVBoxLayout()
+        Timerlayout.addWidget(self.label)
+        # layout.addWidget(self.start_btn)
+        # layout.addWidget(self.stop_btn)
+        self.setLayout(Timerlayout)
+
+        self.thread = None
+        self.worker = None
+
+        # self.start_btn.clicked.connect(self.start_timer)
+        # self.stop_btn.clicked.connect(self.stop_timer)
+
+    def start_timer(self):
+        self.thread = QThread()
+        self.worker = TimerWorker()
+
+        # move worker to thread
+        self.worker.moveToThread(self.thread)
+
+        # wire up thread start → worker start
+        self.thread.started.connect(self.worker.start_timer)
+
+        # worker emits tick → update GUI
+        self.worker.tick.connect(self.update_label)
+
+        # cleanup
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+
+        self.thread.start()
+
+    def stop_timer(self):
+        if self.worker:
+            self.worker.stop_timer()
+
+    def update_label(self, elapsed):
+        self.label.setText(f"{elapsed:.2f}")
+
+    def setup_serial(self):
+        self.serial_thread = QThread()
+        self.serial_worker = SerialWorker("COM3")
+
+        self.serial_worker.moveToThread(self.serial_thread)
+        self.serial_thread.started.connect(self.serial_worker.run)
+
+        # hook serial messages to timer
+        self.serial_worker.start_signal.connect(self.start_timer)
+        self.serial_worker.stop_signal.connect(self.stop_timer)
+
+        self.serial_thread.start()
+
+    def closeEvent(self, event):
+        # Make sure to stop threads on exit
+        self.serial_worker.stop()
+        self.serial_thread.quit()
+        self.serial_thread.wait()
+        self.worker.stop()
+        self.thread.quit()
+        self.thread.wait()
+        super().closeEvent(event)
 
     def on_mode_selected(self, mode):
         self.selected_mode = mode

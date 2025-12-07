@@ -1,10 +1,19 @@
 # October 28th 2025
 # Script fills in "variables" on gcode code to 3d printer so we can altar speed, length, width, etc..
 
+#TODO Change the y bound to account for the camera head now.
+#TODO Ask Silas on whether one point images scans per line is plausible. It's an edge case. Ask Silas on how long the raster scan
+# pattern is, if never reachs constant velocity, calculations go to the ground (kind of)
+#TODO change units of kinematics, prob necessary.
+# Right now, code assumes jerk in x and y directions are equal. Good assumption.
+#n_x,n_y should be greater than equal to 3
+
+from math import sqrt
+
 
 class GCodePlaceholders:
 
-    def __init__(self, mode,  X_initial, Y_initial, Z_initial, ΔX, ΔY, ΔZ, XBound, YBound, ZBound, Speed):
+    def __init__(self, mode,  X_initial, Y_initial, Z_initial, ΔX, ΔY, ΔZ, XBound, YBound, ZBound, Speed, Acceleration, Jerk, n_x, n_y):
         self.Xinit = X_initial
         self.Yinit = Y_initial
         self.Zinit = Z_initial
@@ -15,8 +24,18 @@ class GCodePlaceholders:
         self.YBound = YBound
         self.Zbound = ZBound
         self.speed = Speed
+        self.acceleration = Acceleration
+        self.jerk = Jerk
         self.mode = int(mode)
         self.output_file = "3d-printer_scan_pattern_output.txt"
+        self.n_x = n_x
+        self.n_y = n_y
+
+        self.numIterations = 20000
+
+        #TODO
+        self.N_x = 3
+        self.N_y = 2
 
         if(self.Xinit >= 0 and self.Xinit <= self.XBound
             and self.Yinit >= 0 and self.Yinit <= self.YBound
@@ -24,16 +43,186 @@ class GCodePlaceholders:
 
             self.createGCode()
             self.Scan()
+            self.endPrint()
 
         else:
             print("The initial locations exceeds the Bounds")
+        
+        self.timeVector = self.createTimeVector()
+        print(self.timeVector)
+
+    def createTimeVector(self):
+                    
+        speed = self.speed//60
+
+        case1 = []
+        case2 = []
+        xDistance =[]
+        xTimes = []
+        yDistance = []
+        yTimes = []
+
+        # xDistance is size of n_x - 1
+        for i in range(1, self.n_x):
+            xDistance.append(i*self.X//self.n_x)
+        # yDistance is size of n_y - 1
+        for i in range(1, abs(self.n_y)):
+            yDistance.append(i*abs(self.Y)//self.n_y)
+
+        if(self.mode == 2):
+
+            # Assume hor motion first applies:
+            # Implement algorithm
+            for val in (yDistance):
+                if(val <= speed**2/(2*self.acceleration)):
+                    case1.append(sqrt(val*2/self.acceleration))
+                elif(val <= self.Y - (speed**2 - self.jerk**2)/(2*self.acceleration)):
+                    print(val)
+                    case1.append((val - speed**2/(2*self.acceleration))/speed + speed/self.acceleration)
+                    print((val - speed**2/(2*self.acceleration))/speed)
+                elif(val <= self.Y):
+                    k = val - self.Y + (speed**2 - self.jerk**2)/(2*self.acceleration)
+                    # Taking the greater root, more checks necessary later.
+                    case1.append((speed + sqrt(speed**2 - 2*self.acceleration*k))/self.acceleration)
+
+            for val in (yDistance):
+                if(val <= (speed**2 - self.jerk**2)/(2*self.acceleration)):
+                    case2.append((-self.jerk + sqrt(self.jerk**2 + 2*self.acceleration *val))/self.acceleration)
+                elif(val <= self.Y - (speed**2 - self.jerk**2)/(2*self.acceleration)):
+                    case2.append((val - (speed**2 - self.jerk**2)/(2*self.acceleration))/speed)
+                elif(val <= self.Y):
+                    k = val - self.Y + (speed**2 - self.jerk**2)/(2*self.acceleration)
+                    # Taking the greater root, more checks necessary later.
+                    case2.append((speed + sqrt(speed**2 - 2*self.acceleration*k))/self.acceleration)
+
+            for val in (xDistance):
+                if(val <= speed**2/(2*self.acceleration)):
+                    xTimes.append((-self.jerk + sqrt(self.jerk**2 + 2*self.acceleration *val))/self.acceleration)
+                elif(val <= self.X - (speed**2 - self.jerk**2)/(2*self.acceleration)):
+                    xTimes.append((val - (speed**2 - self.jerk**2)/(2*self.acceleration))/speed)
+                elif(val <= self.X):
+                    k = val - self.X + (speed**2 - self.jerk**2)/(2*self.acceleration)
+                    # Taking the greater root, more checks necessary later.
+                    xTimes.append((speed + sqrt(speed**2 - 2*self.acceleration*k))/self.acceleration)
+
+            yTimes.append(case1)
+            yTimes.append(case2)
+
+            timeVector = [0]
+
+            # Total amount of nodes to image. The first node of the timeVector is at time 0.
+            N = (self.n_x-1)*(self.N_x-1) + (self.n_y-1)*self.N_y + 1
+
+            # case 1: time vector population, populates for the first line, including the corner node.
+            # This means the algorithm goes to the end.
+            # 
+            for i in range(self.n_y-1):
+                timeVector.append(yTimes[0][i] + timeVector[i-1])
+
+            # 
+            next = self.n_y
+            segment = 1
+            for i in range(self.n_y, N):
+                if(i == next):
+                    if(segment == 0):
+                        next = next + self.n_y-1
+                        segment = 1
+                    else:
+                        next = next + self.n_x-1
+                        segment = 0        
+
+                if(~segment):
+                    timeVector.append(xTimes[i + self.n_x-1 - next]+ timeVector[i-1])
+                else:
+                    timeVector.append(yTimes[1][i + self.n_y-1 - next] + timeVector[i-1])
+
+        elif(self.mode == 1):
+
+            # Assume hor motion first applies:
+            # Implement algorithm
+            for val in (xDistance):
+                if(val <= speed**2/(2*self.acceleration)):
+                    case1.append(sqrt(val*2/self.acceleration))
+                elif(val <= self.X - (speed**2 - self.jerk**2)/(2*self.acceleration)):
+                    # print(val)
+                    case1.append((val - speed**2/(2*self.acceleration))/speed+speed/self.acceleration)
+                    # print((val - speed**2/(2*self.acceleration))/speed)
+                elif(val <= self.X):
+                    k = val - self.X + (speed**2 - self.jerk**2)/(2*self.acceleration)
+                    # Taking the greater root, more checks necessary later.
+                    timeOffset = speed/self.acceleration + (self.X - speed**2/self.acceleration + self.jerk**2/(2*self.acceleration))/speed
+                    case1.append((speed + sqrt(speed**2 - 2*self.acceleration*k))/self.acceleration + timeOffset)
+
+            for val in (xDistance):
+                if(val <= (speed**2 - self.jerk**2)/(2*self.acceleration)):
+                    case2.append((-self.jerk + sqrt(self.jerk**2 + 2*self.acceleration *val))/self.acceleration)
+                elif(val <= self.X - (speed**2 - self.jerk**2)/(2*self.acceleration)):
+                    case2.append((val - (speed**2 - self.jerk**2)/(2*self.acceleration))/speed + (speed-self.jerk)/self.acceleration)
+                elif(val <= self.X):
+                    k = val - self.X + (speed**2 - self.jerk**2)/(2*self.acceleration)
+                    # Taking the greater root, more checks necessary later.
+                    timeOffset = (speed-self.jerk)/self.acceleration + (self.X - (speed**2-self.jerk**2)/self.acceleration)/speed
+                    case2.append((speed + sqrt(speed**2 - 2*self.acceleration*k))/self.acceleration)
+
+            for val in (yDistance):
+                if(val <= speed**2/(2*self.acceleration)):
+                    yTimes.append((-self.jerk + sqrt(self.jerk**2 + 2*self.acceleration *val))/self.acceleration)
+                elif(val <= self.Y - (speed**2 - self.jerk**2)/(2*self.acceleration)):
+                    yTimes.append((val - (speed**2 - self.jerk**2)/(2*self.acceleration))/speed + (speed-self.jerk)/self.acceleration)
+                elif(val <= self.Y):
+                    k = val - self.Y + (speed**2 - self.jerk**2)/(2*self.acceleration)
+                    # Taking the greater root, more checks necessary later.
+                    timeOffset = (speed-self.jerk)/self.acceleration + (self.Y - (speed**2-self.jerk**2)/self.acceleration)/speed
+                    yTimes.append((speed + sqrt(speed**2 - 2*self.acceleration*k))/self.acceleration + timeOffset)
+
+            xTimes.append(case1)
+            xTimes.append(case2)
+
+            timeVector = [0]
+
+            # Total amount of nodes to image. The first node of the timeVector is at time 0.
+            N = (self.n_x-1)*(self.N_x-1) + (self.n_y-1)*self.N_y + 1
+
+            # case 1: time vector population, populates for the first line, including the corner node.
+            # This means the algorithm goes to the end.
+            # 
+            for i in range(self.n_x-1):
+                timeVector.append(xTimes[0][i] + timeVector[i-1])
+
+            # 
+            next = self.n_x
+            segment = 1
+            for i in range(self.n_x, N):
+                if(i == next):
+                    if(segment == 0):
+                        next = next + self.n_x-1
+                        segment = 1
+                    else:
+                        next = next + self.n_y-1
+                        segment = 0        
+
+                if(~segment):
+                    timeVector.append(yTimes[i + self.n_y-1 - next]+ timeVector[i-1])
+                else:
+                    timeVector.append(xTimes[1][i + self.n_x-1 - next] + timeVector[i-1])
+
+        return timeVector
+
     
     def createGCode(self):
 
         with open(self.output_file, "w") as f:
             f.write('G21\r\nG90\r\n')
             f.write(f"{'G1 X'}{self.Xinit}{' Y'}{self.Yinit}{' Z'}{self.Zinit}{' F'}{self.speed}{'\r\n'}")
-            # f.write('G91\r\n')
+            #"jerk":  jerk is the slowest speed the printer can move before it decides to completely stop. (Stops and turns).
+            f.write(f"{'M205 X'}{self.jerk}{' Y'}{self.jerk}{'\r\n'}")
+            #acceleration: mm/s²
+            f.write(f"{'M204 T'}{self.acceleration}{'\r\n'}")
+            f.write('M118 START\r\n') 
+    
+    def endPrint(self):
+        with open(self.output_file, "a") as f:
+            f.write('M118 END\r\n')
 
     def Scan(self):
         if(self.mode == 1):
@@ -99,7 +288,7 @@ class GCodePlaceholders:
             inc = 0;
 
             with open(self.output_file, "a") as f:
-                while(inc < 5 and x >= 0 and x <= self.XBound
+                while(inc < self.numIterations and x >= 0 and x <= self.XBound
                       and y >= 0 and y <= self.YBound 
                       and z >= 0 and z <= self.Zbound):
                     
@@ -121,7 +310,7 @@ class GCodePlaceholders:
             inc = 0;
 
             with open(self.output_file, "a") as f:
-                while(inc < 5 and x >= 0 and x <= self.XBound
+                while(inc < self.numIterations and x >= 0 and x <= self.XBound
                       and y >= 0 and y <= self.YBound 
                       and z >= 0 and z <= self.Zbound):
                     
@@ -136,9 +325,10 @@ class GCodePlaceholders:
             print("Filled file written to", self.output_file)
 
 
-# if __name__ == "__main__":
-    # parameters = 
-    # outputfile = GCodePlaceholders(1, 5, 5, 10, 20, 0, 200, 200, 150, 12000)
+if __name__ == "__main__":
+    #def __init__(self, mode,  X_initial, Y_initial, Z_initial, ΔX, ΔY, ΔZ, XBound, YBound, ZBound, Speed, acceleration, jerk, n_x, n_y):
+    # Acceleration [units/s/s], speed [units/min], Jerk [units/s]. Units are set in mm, as in G21
+    test = GCodePlaceholders(1 ,50, 50, 0, 100, -20, 0, 200, 200, 150, 12000, 700, 4, 3, 3)
 
 
 
