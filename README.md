@@ -5,6 +5,9 @@
 
 ---
 
+![me](https://github.com/al3xzheng/MultiSpectral-Thin-Film-Imaging-Interface/blob/main/WIN_GANTRY_SAMPLES___SILICON_WAFER_AND_PLA.gif)
+![me](https://github.com/al3xzheng/MultiSpectral-Thin-Film-Imaging-Interface/blob/main/WINGANTRYCOMPILEDHD8k.gif)
+
 ## Quick summary
 
 This repository contains:
