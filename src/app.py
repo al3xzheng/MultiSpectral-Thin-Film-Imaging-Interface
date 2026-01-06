@@ -8,22 +8,23 @@ from PySide6.QtGui import QPixmap, QDoubleValidator, QFont
 from PySide6.QtCore import Qt, Signal, QObject, QThread
 from pathlib import Path
 
-# The backend
+# External dependencies for hardware control and G-code logic
 from gcode_placeholders import GCodePlaceholders
 import serial
-# from RunTimer import Timer
 
-
-#TODO implement graceful thread ends.
+# TODO: implement graceful thread ends to prevent "zombie" processes on exit.
 
 # ---------------- Mode Selection ----------------
 class ModeSelector(QWidget):
+    """
+    UI Component for selecting the print pattern.
+    Uses a scrollable grid to display mode names and preview images.
+    """
     mode_selected = Signal(str)
 
     def __init__(self, modes):
         super().__init__()
         outer_layout = QVBoxLayout()
-        # outer_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         title = QLabel("Select a Mode")
         title.setFont(QFont("Arial", 14, QFont.Weight.Bold))
@@ -34,27 +35,26 @@ class ModeSelector(QWidget):
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
         outer_layout.addWidget(subtitle)
 
+        # Scroll area ensures the UI remains accessible even with many modes
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        # scroll.setAlignment(Qt.AlignmentFlag.AlignTop)
-        #scroll.setMinimumSize(600, 400)
         inner_widget = QWidget()
         grid = QGridLayout()
-        # grid.setAlignment(Qt.AlignmentFlag.AlignCenter)
         inner_widget.setLayout(grid)
         scroll.setWidget(inner_widget)
-        # outer_layout.addWidget(scroll)
 
         self.group = QButtonGroup(self)
         num_modes = len(modes)
-        cols = min(2, num_modes)
+        cols = min(2, num_modes) # Organize into 2 columns for symmetry
 
+        # Dynamically build the UI based on the modes dictionary provided
         for i, (name, img_path) in enumerate(modes.items()):
             row, col = divmod(i, cols)
 
             container = QVBoxLayout()
             container.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+            # Preview Image Handling
             pic = QLabel()
             pixmap = QPixmap(str(img_path))
             if not pixmap.isNull():
@@ -65,6 +65,7 @@ class ModeSelector(QWidget):
                 pic.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             btn = QRadioButton(name)
+            # Map each button's toggle event to emit the specific mode name
             btn.toggled.connect(lambda checked, n=name: self.on_select(n, checked))
             self.group.addButton(btn)
 
@@ -77,16 +78,20 @@ class ModeSelector(QWidget):
         inner_widget.setLayout(grid)
         scroll.setWidget(inner_widget)
         outer_layout.addWidget(scroll)
-        # outer_layout.addStretch()
         self.setLayout(outer_layout)
 
     def on_select(self, name, checked):
+        """Notify the main window which mode has been chosen."""
         if checked:
             self.mode_selected.emit(name)
 
 
 # ---------------- Parameter Inputs ----------------
 class ParameterInput(QWidget):
+    """
+    UI Form for entering physical dimensions and printer settings.
+    Uses validation to ensure research data integrity (numeric inputs only).
+    """
     parameters_confirmed = Signal(dict)
 
     def __init__(self, labels):
@@ -107,10 +112,11 @@ class ParameterInput(QWidget):
         grid.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.inputs = {}
 
+        # Dynamically create labels and text fields for all requested parameters
         for i, label in enumerate(labels):
             lbl = QLabel(label)
             edit = QLineEdit()
-            edit.setValidator(QDoubleValidator())
+            edit.setValidator(QDoubleValidator()) # Force numeric input at the UI level
             self.inputs[label] = edit
             grid.addWidget(lbl, i, 0)
             grid.addWidget(edit, i, 1)
@@ -123,16 +129,24 @@ class ParameterInput(QWidget):
         self.setLayout(outer_layout)
 
     def on_confirm(self):
+        """Gather values from UI, cast to integers, and emit to the main application."""
         values = {k: self.inputs[k].text() for k in self.inputs}
         for k in values:
-            values[k] = int(values[k])
+            values[k] = int(values[k]) # Note: Conversion will fail if field is empty
         self.parameters_confirmed.emit(values)
 
-class TimerWorker(QWidget):
+# ---------------- Worker Threads ----------------
 
+#TODO implement timer with timer synchronization in backend and start/stop conditions.
+class TimerWorker(QWidget):
+    """
+    Background timer logic. Inheriting from QWidget is unusual for a worker; 
+    typically QObject is used for non-GUI background tasks.
+    """
     time_changed = Signal(int)
 
     def __init__(self):
+        # Local signal definitions (standard Qt practice uses class-level signals)
         tick = Signal(float)       # emits the elapsed time
         finished = Signal()
 
@@ -141,21 +155,27 @@ class TimerWorker(QWidget):
         self._running = False
 
     def start_timer(self):
+        """Infinite loop for timing; must be run in a separate QThread to avoid UI freezing."""
         self._running = True
         start = time.time()
 
         while self._running:
             elapsed = time.time() - start
             self.tick.emit(elapsed)
-            time.sleep(0.1)   # 10 Hz update; adjust as needed
+            time.sleep(0.1)   # 10 Hz update frequency
 
         self.finished.emit()
 
     def stop_timer(self):
+        """Break the while loop to stop the timer."""
         self._running = False
 
+#TODO serial port monitoring thread.
 class SerialWorker(QObject):
-
+    """
+    Dedicated thread for monitoring the Serial Port (Microcontroller communication).
+    This prevents the GUI from lagging while waiting for hardware data.
+    """
     start_signal = Signal()
     stop_signal = Signal()
     finished = Signal()
@@ -163,28 +183,33 @@ class SerialWorker(QObject):
     def __init__(self, port):
         super().__init__()
         self._running = True
+        # Establish connection to hardware (e.g., Arduino/Printer)
         self.port = serial.Serial(port, 115200, timeout=0.1)
 
     def run(self):
+        """Continuous polling of the serial buffer."""
         while self._running:
             line = self.port.readline().decode().strip()
 
+            # Hardware-to-Software triggers
             if line == "START":
                 self.start_signal.emit()
-
             elif line == "STOP":
                 self.stop_signal.emit()
-
-            # time.sleep(0.01)
 
         self.finished.emit()
 
     def stop(self):
+        """Stop the background polling loop."""
         self._running = False
 
 
 # ---------------- Main Window ----------------
 class MainWindow(QMainWindow):
+    """
+    Main controller for the research interface. 
+    Coordinates signals between the UI, the Serial port, and the Timer.
+    """
     def __init__(self):
         super().__init__()
 
@@ -193,6 +218,7 @@ class MainWindow(QMainWindow):
         self.selected_mode = None
         self.parameters = None
 
+        # --- UI LAYOUT SETUP ---
         central = QWidget()
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(60, 40, 60, 40)
@@ -211,6 +237,7 @@ class MainWindow(QMainWindow):
         content_layout = QHBoxLayout()
         content_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
+        # Paths for pattern visualization images
         modes = {
             "1": Path(__file__).parent.parent / "data" / "Scan1.png",
             "2": Path(__file__).parent.parent / "data" / "Scan2.png",
@@ -218,34 +245,32 @@ class MainWindow(QMainWindow):
             "4": Path(__file__).parent.parent / "data" / "Scan4.png",
         }
 
+        # Instantiate sub-widgets
         self.mode_selector = ModeSelector(modes)
         self.mode_selector.mode_selected.connect(self.on_mode_selected)
 
         self.param_input = ParameterInput(["X_initial", "Y_initial", "Z_initial", "ΔX", "ΔY", "ΔZ", "XBound", "YBound", "ZBound","Speed", "Acceleration", "Jerk", "n_x", "n_y"])
         self.param_input.parameters_confirmed.connect(self.on_params_confirmed)
 
-        # self.timer_display = TimerDisplay()
-        # self.timer_display.time_changed.connect(self.on_mode_selected)
-
         content_layout.addWidget(self.mode_selector)
         content_layout.addSpacing(40)
         content_layout.addWidget(self.param_input)
         main_layout.addLayout(content_layout)
-        # main_layout.addWidget(self.timer_display)
 
-        # Gcode button
+        # Generate Button: Disabled until all inputs are validated
         self.generate_btn = QPushButton("Generate G-code")
         self.generate_btn.setEnabled(False)
         self.generate_btn.clicked.connect(self.on_generate_gcode)
 
+        # Initialize the hardware communication thread
         self.setup_serial()
 
-        # Align bottom-right
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         btn_layout.addWidget(self.generate_btn)
         main_layout.addLayout(btn_layout)
 
+        # Coordinate system reference image
         image_label = QLabel()
         pixmap = QPixmap(str(Path(__file__).parent.parent / "data" / "coords.png"))
         image_label.setPixmap(pixmap)
@@ -256,78 +281,82 @@ class MainWindow(QMainWindow):
         bottom_left_layout.addWidget(image_label, alignment=Qt.AlignLeft | Qt.AlignVCenter)
         bottom_left_layout.addStretch()
         main_layout.addLayout(bottom_left_layout)
-        # -----------------------------------
 
-        # main_layout.addStretch()
         central.setLayout(main_layout)
         self.setCentralWidget(central)
         self.resize(1000, 800)
         self.setMinimumSize(800, 600)
 
+        # TODO Timer Display Label 
         self.label = QLabel("0.0")
-        # self.start_btn = QPushButton("Start")
-        # self.stop_btn = QPushButton("Stop")
-
         Timerlayout = QVBoxLayout()
         Timerlayout.addWidget(self.label)
-        # layout.addWidget(self.start_btn)
-        # layout.addWidget(self.stop_btn)
         self.setLayout(Timerlayout)
 
         self.thread = None
         self.worker = None
 
-        # self.start_btn.clicked.connect(self.start_timer)
-        # self.stop_btn.clicked.connect(self.stop_timer)
-
+    #TODO
     def start_timer(self):
+        """
+        Threading logic: Moves the TimerWorker to a new QThread.
+        This allows the clock to tick without stuttering the UI.
+        """
         self.thread = QThread()
         self.worker = TimerWorker()
 
-        # move worker to thread
+        # move worker to thread to avoid affinity issues
         self.worker.moveToThread(self.thread)
 
-        # wire up thread start → worker start
+        # Signals connecting the background thread to UI updates
         self.thread.started.connect(self.worker.start_timer)
-
-        # worker emits tick → update GUI
         self.worker.tick.connect(self.update_label)
 
-        # cleanup
+        # Thread cleanup instructions
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
 
         self.thread.start()
 
+    #TODO
     def stop_timer(self):
         if self.worker:
             self.worker.stop_timer()
 
+    #TODO
     def update_label(self, elapsed):
+        """Update the UI label with the time received from the worker thread."""
         self.label.setText(f"{elapsed:.2f}")
 
+    #TODO
     def setup_serial(self):
+        """
+        Initializes the Serial listener thread.
+        Links hardware 'START/STOP' signals to the software timer functions.
+        """
         self.serial_thread = QThread()
         self.serial_worker = SerialWorker("COM3")
 
         self.serial_worker.moveToThread(self.serial_thread)
         self.serial_thread.started.connect(self.serial_worker.run)
 
-        # hook serial messages to timer
+        # Cross-worker signal routing
         self.serial_worker.start_signal.connect(self.start_timer)
         self.serial_worker.stop_signal.connect(self.stop_timer)
 
         self.serial_thread.start()
 
+    #TODO WITH new threads that are labeled TODO
     def closeEvent(self, event):
-        # Make sure to stop threads on exit
+        """Mandatory cleanup: Ensures background threads are killed before the app closes."""
         self.serial_worker.stop()
         self.serial_thread.quit()
         self.serial_thread.wait()
-        self.worker.stop()
-        self.thread.quit()
-        self.thread.wait()
+        if self.worker:
+            self.worker.stop()
+            self.thread.quit()
+            self.thread.wait()
         super().closeEvent(event)
 
     def on_mode_selected(self, mode):
@@ -339,15 +368,14 @@ class MainWindow(QMainWindow):
         self.check_ready()
 
     def check_ready(self):
-        """Enable button only when both selections are ready."""
+        """Gatekeeper: Button is only usable once all experimental data is provided."""
         if self.selected_mode and self.parameters:
             self.generate_btn.setEnabled(True)
 
     def on_generate_gcode(self):
-        # del self.generateGcode
+        """Bridge between UI and the G-code calculation backend."""
+        # Instantiate backend logic with user-provided parameters
         self.generateGcode = GCodePlaceholders(int(self.selected_mode), **(self.parameters))
-        # self.generateGcode = GCodePlaceholders(desired thing).
-        # self.generate_gcode(self.selected_mode, **self.parameters)
 
 
 if __name__ == "__main__":
