@@ -1,14 +1,11 @@
-# October 28th 2025
-# Script fills in "variables" on gcode code to 3d printer so we can altar speed, length, width, etc..
 
-#TODO Change the y bound to account for the camera head now.
-#TODO Ask Silas on whether one point images scans per line is plausible. It's an edge case. Ask Silas on how long the raster scan
-# pattern is, if never reachs constant velocity, calculations go to the ground (kind of)
-#TODO change units of kinematics, prob necessary.
-# Right now, code assumes jerk in x and y directions are equal. Good assumption.
-#n_x,n_y should be greater than equal to 3
 
 from math import sqrt
+
+"""
+    The Backend Logic: Responsible for calculating the physical toolpath
+    and the theoretical timing (Time Vector) of the scan pattern.
+    """
 
 
 class GCodePlaceholders:
@@ -33,9 +30,9 @@ class GCodePlaceholders:
 
         self.numIterations = 20000
 
-        #TODO
-        self.N_x = 3
-        self.N_y = 2
+        #TODO 
+        self.N_x = n_x
+        self.N_y = n_y
 
         if(self.Xinit >= 0 and self.Xinit <= self.XBound
             and self.Yinit >= 0 and self.Yinit <= self.YBound
@@ -53,7 +50,7 @@ class GCodePlaceholders:
 
     def createTimeVector(self):
                     
-        speed = self.speed//60
+        speed = self.speed/60
 
         case1 = []
         case2 = []
@@ -329,16 +326,6 @@ if __name__ == "__main__":
     #def __init__(self, mode,  X_initial, Y_initial, Z_initial, ΔX, ΔY, ΔZ, XBound, YBound, ZBound, Speed, acceleration, jerk, n_x, n_y):
     # Acceleration [units/s/s], speed [units/min], Jerk [units/s]. Units are set in mm, as in G21
     test = GCodePlaceholders(1 ,50, 50, 0, 100, -20, 0, 200, 200, 150, 12000, 700, 4, 3, 3)
-
-
-
-
-
-
-
-
-
-
         
 
     # # Safety bound implementation.
