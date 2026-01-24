@@ -3,6 +3,10 @@
 **Purpose:** repurpose a Prusa I3 MK3S as a deterministic 3-axis motion platform for research (raster scans, sensor sweeps, motion-control experiments).  
 **Alex Zheng / PhD Silas Ifyeani:** [PI Kevin Musselman] — Research code for motion experiments and metrology.
 
+Our work was featured in SPIE Photonics West and presented live on 17 - 22 January 2026 (San Francisco, California, US):
+See the conference link below! I'm so grateful to the team for being able to contribute and having the privilege to be a co-author!
+https://spie.org/photonics-west/presentation/Low-resolution-reflectometry-for-inline-thin-film-inspection/13904-52
+
 ---
 
 ![me](https://github.com/al3xzheng/MultiSpectral-Thin-Film-Imaging-Interface/blob/main/WIN_GANTRY_SAMPLES___SILICON_WAFER_AND_PLA.gif)
